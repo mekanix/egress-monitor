@@ -1,0 +1,6 @@
+.depend
+*.o
+*.debug
+*.full
+*.1.gz
+egress-monitor

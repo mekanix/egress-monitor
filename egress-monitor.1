@@ -1,0 +1,21 @@
+.Dd $Mdocdate: Aug 01 2022 $
+.Dt EGRESS_MONITOR 1
+.Os
+.Sh NAME
+.Nm egress-monitor
+.Nd Watching for default routes changes and sets the interface group
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+.Pp
+When the default route is added, egress-monitor sets the group of that
+interface to apropriate egress. That means for IPv4 the group will be v4_egress.
+.Sh EXAMPLES
+.Pp
+Quickest way to get basic service provisioned with Ansible is:
+.Pp
+.Dl egress-monitor
+.Sh SEE ALSO
+.Xr socket 2
+.Sh AUTHORS
+Goran Mekić <meka@tilda.center>
