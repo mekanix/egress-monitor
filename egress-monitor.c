@@ -103,15 +103,22 @@ unset_egress(const char *name, int inet, int s) {
 
 int
 main() {
-  int s, n, fibs = getfibs();
+  int rc, s, n, fibs = getfibs(), kq = kqueue();
   if (fibs < 0) {
     perror("get fibs");
+    exit(1);
+  }
+  if (kq == -1) {
+    perror("kqueue");
     exit(1);
   }
   char rest[1024];
   struct rt_msghdr hd;
   struct msghdr msg;
   struct iovec iov[2];
+  struct kevent event;
+  struct kevent tevent;
+
 
   memset(&hd, 0, sizeof(hd));
   memset(&msg, 0, sizeof(msg));
@@ -124,7 +131,19 @@ main() {
   msg.msg_iovlen = 2;
 
   s = socket(PF_ROUTE, SOCK_RAW, 0);
+  EV_SET(&event, s, EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
+  rc = kevent(kq, &event, 1, NULL, 0, NULL);
+  if (rc < 0) {
+    perror("kevent");
+    exit(1);
+  }
+
   for (;;) {
+    rc = kevent(kq, NULL, 0, &tevent, 1, NULL);
+    if (rc == -1 || tevent.data == 0) {
+      perror("kevent");
+      break;
+    }
     n = recvmsg(s, &msg, 0);
     if (n < 0) {
       perror("recvmsg failed");
