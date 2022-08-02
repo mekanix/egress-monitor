@@ -7,6 +7,7 @@
 #include <net/if_var.h>
 #include <net/route.h>
 #include <netinet/in.h>
+#include <sys/capsicum.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
@@ -100,8 +101,8 @@ static int
 unset_egress(const char *name, int inet, int s, int fib) {
   struct ifgroupreq ifgr;
   char *egress = egress_name(name, inet, fib);
-  int namelen = strlen(name);
-  int egresslen = strlen(egress);
+  int namelen = strlen(name) + 1;
+  int egresslen = strlen(egress) + 1;
   strlcpy(ifgr.ifgr_name, name, namelen);
   strlcpy(ifgr.ifgr_group, egress, egresslen);
   printf("unset: %s %s\n", ifgr.ifgr_name, ifgr.ifgr_group);
@@ -183,6 +184,7 @@ main() {
   struct iovec iov[2];
   struct kevent events[fibs];
   struct kevent tevent;
+  cap_rights_t r;
 
   memset(&hd, 0, sizeof(hd));
   memset(&msg, 0, sizeof(msg));
@@ -194,12 +196,22 @@ main() {
   msg.msg_iov = iov;
   msg.msg_iovlen = 2;
 
+  cap_rights_init(&r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT);
+
   for (int i = 0; i < fibs; ++i) {
     setfib(i);
     s = socket(PF_ROUTE, SOCK_RAW, 0);
     sockets[i] = s;
     EV_SET(events+i, s, EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
+    // if (cap_rights_limit(s, &r) < 0) {
+    //   perror("cap_rights_limit");
+    //   exit(1);
+    // }
   }
+  // if (cap_enter() < 0) {
+  //   perror("cap_enter");
+  //   exit(1);
+  // }
   rc = kevent(kq, events, fibs, NULL, 0, NULL);
   if (rc < 0) {
     perror("kevent");
@@ -226,8 +238,13 @@ main() {
       break;
     }
     if (hd.rtm_index) {
+      char *ret;
       char name[IFNAMSIZ];
-      if_indextoname(hd.rtm_index, name);
+      ret = if_indextoname(hd.rtm_index, name);
+      if (!ret) {
+        perror("if_indextoname");
+        break;
+      }
       struct sockaddr *data = iov[1].iov_base;
       switch(hd.rtm_type) {
         case RTM_ADD: {
