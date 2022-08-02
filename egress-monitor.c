@@ -56,21 +56,23 @@ default_v6(struct sockaddr_in6 *addr) {
 
 
 static char *
-egress_name(const char *name, int inet) {
-  char version = inet == 4 ? '4' : '6';
+egress_name(const char *name, int inet, int fib) {
+  if (inet != 4 && inet != 6) {
+    return NULL;
+  }
   char *groupname = malloc(IFNAMSIZ * sizeof(char));
-  int egresslen = strlen(IFG_EGRESS) + 1;
-  groupname[0] = 'v';
-  groupname[1] = version;
-  strlcpy(groupname+2, IFG_EGRESS, egresslen);
+  snprintf(groupname, IFNAMSIZ, "v%dfib%d%s", inet, fib, IFG_EGRESS);
   return groupname;
 }
 
 
 static int
-set_egress(const char *name, int inet, int s) {
+set_egress(const char *name, int inet, int s, int fib) {
   struct ifgroupreq ifgr;
-  char *egress = egress_name(name, inet);
+  char *egress = egress_name(name, inet, fib);
+  if (!egress) {
+    return -1;
+  }
   int namelen = strlen(name) + 1;
   int egresslen = strlen(egress) + 1;
   strlcpy(ifgr.ifgr_name, name, namelen);
@@ -85,9 +87,9 @@ set_egress(const char *name, int inet, int s) {
 
 
 static int
-unset_egress(const char *name, int inet, int s) {
+unset_egress(const char *name, int inet, int s, int fib) {
   struct ifgroupreq ifgr;
-  char *egress = egress_name(name, inet);
+  char *egress = egress_name(name, inet, fib);
   int namelen = strlen(name) + 1;
   int egresslen = strlen(egress) + 1;
   strlcpy(ifgr.ifgr_name, name, namelen);
@@ -103,7 +105,7 @@ unset_egress(const char *name, int inet, int s) {
 
 int
 main() {
-  int rc, s, n, fibs = getfibs(), kq = kqueue();
+  int rc, s, n, fib, fibs = getfibs(), kq = kqueue();
   if (fibs < 0) {
     perror("get fibs");
     exit(1);
@@ -112,13 +114,13 @@ main() {
     perror("kqueue");
     exit(1);
   }
+  int sockets[fibs];
   char rest[1024];
   struct rt_msghdr hd;
   struct msghdr msg;
   struct iovec iov[2];
-  struct kevent event;
+  struct kevent events[fibs];
   struct kevent tevent;
-
 
   memset(&hd, 0, sizeof(hd));
   memset(&msg, 0, sizeof(msg));
@@ -130,9 +132,13 @@ main() {
   msg.msg_iov = iov;
   msg.msg_iovlen = 2;
 
-  s = socket(PF_ROUTE, SOCK_RAW, 0);
-  EV_SET(&event, s, EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
-  rc = kevent(kq, &event, 1, NULL, 0, NULL);
+  for (int i = 0; i < fibs; ++i) {
+    setfib(i);
+    s = socket(PF_ROUTE, SOCK_RAW, 0);
+    sockets[i] = s;
+    EV_SET(events+i, s, EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
+  }
+  rc = kevent(kq, events, fibs, NULL, 0, NULL);
   if (rc < 0) {
     perror("kevent");
     exit(1);
@@ -144,7 +150,14 @@ main() {
       perror("kevent");
       break;
     }
-    n = recvmsg(s, &msg, 0);
+    for (fib = 0; fib < fibs; ++fib) {
+      if (sockets[fib] == tevent.ident) break;
+    }
+    if (fib == fibs) {
+      fprintf(stderr, "Can not find the FIB that emited the event!\n");
+      break;
+    }
+    n = recvmsg(tevent.ident, &msg, 0);
     if (n < 0) {
       perror("recvmsg failed");
       break;
@@ -158,7 +171,7 @@ main() {
           switch(data->sa_family) {
             case AF_INET: {
               if (default_v4((struct sockaddr_in *)data)) {
-                int rc = set_egress(name, 4, s);
+                int rc = set_egress(name, 4, s, fib);
                 if (rc < 0) {
                   perror("set_egress");
                 }
@@ -167,7 +180,7 @@ main() {
             }
             case AF_INET6: {
               if (default_v6((struct sockaddr_in6 *)data)) {
-                int rc = set_egress(name, 6, s);
+                int rc = set_egress(name, 6, s, fib);
                 if (rc < 0) {
                   perror("set_egress");
                 }
@@ -181,7 +194,7 @@ main() {
           switch(data->sa_family) {
             case AF_INET: {
               if (default_v4((struct sockaddr_in *)data)) {
-                int rc = unset_egress(name, 4, s);
+                int rc = unset_egress(name, 4, s, fib);
                 if (rc < 0) {
                   perror("unset_egress");
                 }
@@ -190,7 +203,7 @@ main() {
             }
             case AF_INET6: {
               if (default_v6((struct sockaddr_in6 *)data)) {
-                int rc = unset_egress(name, 6, s);
+                int rc = unset_egress(name, 6, s, fib);
                 if (rc < 0) {
                   perror("unset_egress");
                 }
