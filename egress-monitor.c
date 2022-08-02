@@ -103,6 +103,56 @@ unset_egress(const char *name, int inet, int s, int fib) {
 }
 
 
+void
+tag(struct sockaddr *data, char *name, int s, int fib) {
+  switch(data->sa_family) {
+    case AF_INET: {
+      if (default_v4((struct sockaddr_in *)data)) {
+        int rc = set_egress(name, 4, s, fib);
+        if (rc < 0) {
+          perror("set_egress");
+        }
+      }
+      break;
+    }
+    case AF_INET6: {
+      if (default_v6((struct sockaddr_in6 *)data)) {
+        int rc = set_egress(name, 6, s, fib);
+        if (rc < 0) {
+          perror("set_egress");
+        }
+      }
+      break;
+    }
+  }
+}
+
+
+void
+untag(struct sockaddr *data, char *name, int s, int fib) {
+  switch(data->sa_family) {
+    case AF_INET: {
+      if (default_v4((struct sockaddr_in *)data)) {
+        int rc = unset_egress(name, 4, s, fib);
+        if (rc < 0) {
+          perror("unset_egress");
+        }
+      }
+      break;
+    }
+    case AF_INET6: {
+      if (default_v6((struct sockaddr_in6 *)data)) {
+        int rc = unset_egress(name, 6, s, fib);
+        if (rc < 0) {
+          perror("unset_egress");
+        }
+      }
+      break;
+    }
+  }
+}
+
+
 int
 main() {
   int rc, s, n, fib, fibs = getfibs(), kq = kqueue();
@@ -168,49 +218,11 @@ main() {
       struct sockaddr *data = iov[1].iov_base;
       switch(hd.rtm_type) {
         case RTM_ADD: {
-          switch(data->sa_family) {
-            case AF_INET: {
-              if (default_v4((struct sockaddr_in *)data)) {
-                int rc = set_egress(name, 4, s, fib);
-                if (rc < 0) {
-                  perror("set_egress");
-                }
-              }
-              break;
-            }
-            case AF_INET6: {
-              if (default_v6((struct sockaddr_in6 *)data)) {
-                int rc = set_egress(name, 6, s, fib);
-                if (rc < 0) {
-                  perror("set_egress");
-                }
-              }
-              break;
-            }
-          }
+          tag(data, name, s, fib);
           break;
         }
         case RTM_DELETE: {
-          switch(data->sa_family) {
-            case AF_INET: {
-              if (default_v4((struct sockaddr_in *)data)) {
-                int rc = unset_egress(name, 4, s, fib);
-                if (rc < 0) {
-                  perror("unset_egress");
-                }
-              }
-              break;
-            }
-            case AF_INET6: {
-              if (default_v6((struct sockaddr_in6 *)data)) {
-                int rc = unset_egress(name, 6, s, fib);
-                if (rc < 0) {
-                  perror("unset_egress");
-                }
-              }
-              break;
-            }
-          }
+          untag(data, name, s, fib);
           break;
         }
       }
