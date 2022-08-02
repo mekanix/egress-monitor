@@ -12,9 +12,19 @@
 #include <sys/sysctl.h>
 #include <sys/types.h>
 
+#include "config.h"
+
 
 const char *
 inet_ntop(int af, const void *src, char *dst, socklen_t size);
+
+
+static char *
+version() {
+  char *ver = malloc(16 * sizeof(char));
+  snprintf(ver, 16, "%d.%d.%d", major, minor, patch);
+  return ver;
+}
 
 
 static int
@@ -90,8 +100,8 @@ static int
 unset_egress(const char *name, int inet, int s, int fib) {
   struct ifgroupreq ifgr;
   char *egress = egress_name(name, inet, fib);
-  int namelen = strlen(name) + 1;
-  int egresslen = strlen(egress) + 1;
+  int namelen = strlen(name);
+  int egresslen = strlen(egress);
   strlcpy(ifgr.ifgr_name, name, namelen);
   strlcpy(ifgr.ifgr_group, egress, egresslen);
   printf("unset: %s %s\n", ifgr.ifgr_name, ifgr.ifgr_group);
@@ -155,6 +165,8 @@ untag(struct sockaddr *data, char *name, int s, int fib) {
 
 int
 main() {
+  const char *ver = version();
+  printf("egress-monitor(%s): starting\n", ver);
   int rc, s, n, fib, fibs = getfibs(), kq = kqueue();
   if (fibs < 0) {
     perror("get fibs");
@@ -194,6 +206,7 @@ main() {
     exit(1);
   }
 
+  printf("egress-monitor(%s): started\n", ver);
   for (;;) {
     rc = kevent(kq, NULL, 0, &tevent, 1, NULL);
     if (rc == -1 || tevent.data == 0) {
@@ -228,5 +241,6 @@ main() {
       }
     }
   }
+  printf("egress-monitor(%s): stopped\n", ver);
   return 0;
 }
