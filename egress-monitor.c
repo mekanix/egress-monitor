@@ -1,18 +1,32 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/route.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/sysctl.h>
+#include <sys/types.h>
 
 
 const char *
 inet_ntop(int af, const void *src, char *dst, socklen_t size);
+
+
+static int
+getfibs() {
+  int value, rc;
+  size_t valsize = sizeof(value);
+  rc = sysctlbyname("net.fibs", &value, &valsize, NULL, 0);
+  if (rc < 0) {
+    return rc;
+  }
+  return value;
+}
 
 
 static int
@@ -89,7 +103,11 @@ unset_egress(const char *name, int inet, int s) {
 
 int
 main() {
-  int s, n;
+  int s, n, fibs = getfibs();
+  if (fibs < 0) {
+    perror("get fibs");
+    exit(1);
+  }
   char rest[1024];
   struct rt_msghdr hd;
   struct msghdr msg;
