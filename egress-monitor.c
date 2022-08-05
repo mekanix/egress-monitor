@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <net/if.h>
+#include <net/if_dl.h>
 #include <net/if_var.h>
 #include <net/route.h>
 #include <netinet/in.h>
@@ -107,7 +108,7 @@ unset_egress(const char *name, int inet, int s, int fib) {
   strlcpy(ifgr.ifgr_group, egress, egresslen);
   printf("unset: %s %s\n", ifgr.ifgr_name, ifgr.ifgr_group);
   free(egress);
-	if (ioctl(s, SIOCDIFGROUP, (caddr_t)&ifgr) == -1 && errno != ENOENT) {
+  if (ioctl(s, SIOCDIFGROUP, (caddr_t)&ifgr) == -1 && errno != ENOENT) {
     return -1;
   }
   return 0;
@@ -162,6 +163,55 @@ untag(struct sockaddr *data, char *name, int s, int fib) {
     }
   }
 }
+
+
+static char *
+ifname(int index) {
+  int mib[6];
+  size_t needed;
+  char *buf;
+  char *next;
+  struct rt_msghdr *rtm;
+  struct if_msghdrl *ifm;
+
+  mib[0] = CTL_NET;
+  mib[1] = PF_ROUTE;
+  mib[2] = 0;             /* protocol */
+  mib[3] = 0;             /* wildcard address family */
+  mib[4] = NET_RT_IFLISTL;/* extra fields for extensible msghdr structs */
+  mib[5] = 0;             /* no flags */
+
+  if (sysctl(mib, 6, NULL, &needed, NULL, 0) < 0) {
+    return NULL;
+  }
+  if ((buf = malloc(needed)) == NULL) {
+    return NULL;
+  }
+  if (sysctl(mib, 6, buf, &needed, NULL, 0) < 0) {
+    free(buf);
+    return NULL;
+  }
+
+  for (next = buf; next < buf + needed; next += rtm->rtm_msglen) {
+    rtm = (struct rt_msghdr *)next;
+    if (rtm->rtm_version != RTM_VERSION)
+      continue;
+    switch (rtm->rtm_type) {
+    case RTM_IFINFO:
+      ifm = (struct if_msghdrl *)rtm;
+      if (ifm->ifm_addrs & RTA_IFP && ifm->ifm_index == index) {
+        struct sockaddr_dl *dl = (struct sockaddr_dl *)IF_MSGHDRL_RTA(ifm);
+        int len = dl->sdl_nlen + 1;
+        char *name = malloc(len + 1);
+        strlcpy(name, dl->sdl_data, len);
+        return name;
+      }
+      break;
+    }
+  }
+  return NULL;
+}
+
 
 
 int
@@ -238,12 +288,11 @@ main() {
       break;
     }
     if (hd.rtm_index) {
-      char *ret;
-      char name[IFNAMSIZ];
-      ret = if_indextoname(hd.rtm_index, name);
-      if (!ret) {
-        perror("if_indextoname");
-        break;
+      char *name;
+      name = ifname(hd.rtm_index);
+      if (!name) {
+        fprintf(stderr, "Could not find interface with index %d\n", hd.rtm_index);
+        continue;
       }
       struct sockaddr *data = iov[1].iov_base;
       switch(hd.rtm_type) {
@@ -256,6 +305,7 @@ main() {
           break;
         }
       }
+      free(name);
     }
   }
   printf("egress-monitor(%s): stopped\n", ver);
