@@ -1,2 +1,5 @@
 # egress-monitor
-Monitor on routing socket(PF_ROUTE, SOCK_RAW, 0) for changes
+Watching for default routes changes and sets the interface group. When the
+default route is added, egress-monitor sets the group of that interface to
+appropriate egress. That means for IPv4 and FIB 0 (default one) the group will
+be v4fib0egress. In general, the group name is `v<4|6>fib<number>egress`.
