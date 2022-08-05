@@ -197,16 +197,17 @@ ifname(int index) {
     if (rtm->rtm_version != RTM_VERSION)
       continue;
     switch (rtm->rtm_type) {
-    case RTM_IFINFO:
-      ifm = (struct if_msghdrl *)rtm;
-      if (ifm->ifm_addrs & RTA_IFP && ifm->ifm_index == index) {
-        struct sockaddr_dl *dl = (struct sockaddr_dl *)IF_MSGHDRL_RTA(ifm);
-        int len = dl->sdl_nlen + 1;
-        char *name = malloc(len + 1);
-        strlcpy(name, dl->sdl_data, len);
-        return name;
+      case RTM_IFINFO: {
+        ifm = (struct if_msghdrl *)rtm;
+        if (ifm->ifm_addrs & RTA_IFP && ifm->ifm_index == index) {
+          struct sockaddr_dl *dl = (struct sockaddr_dl *)IF_MSGHDRL_RTA(ifm);
+          int len = dl->sdl_nlen + 1;
+          char *name = malloc(len + 1);
+          strlcpy(name, dl->sdl_data, len);
+          return name;
+        }
+        break;
       }
-      break;
     }
   }
   return NULL;
@@ -280,16 +281,15 @@ main() {
     }
     if (fib == fibs) {
       fprintf(stderr, "Can not find the FIB that emited the event!\n");
-      break;
+      continue;
     }
     n = recvmsg(tevent.ident, &msg, 0);
     if (n < 0) {
       perror("recvmsg failed");
-      break;
+      continue;
     }
     if (hd.rtm_index) {
-      char *name;
-      name = ifname(hd.rtm_index);
+      char *name = ifname(hd.rtm_index);
       if (!name) {
         fprintf(stderr, "Could not find interface with index %d\n", hd.rtm_index);
         continue;
