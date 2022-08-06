@@ -242,7 +242,7 @@ main() {
   struct kevent events[fibs];
   struct kevent tevent;
   cap_rights_t r;
-  unsigned long commands[1];
+  unsigned long commands[2];
 
   memset(&hd, 0, sizeof(hd));
   memset(&msg, 0, sizeof(msg));
@@ -255,6 +255,7 @@ main() {
   msg.msg_iovlen = 2;
 
   commands[0] = SIOCAIFGROUP;
+  commands[1] = SIOCDIFGROUP;
   mib[0] = CTL_NET;
   mib[1] = PF_ROUTE;
   mib[2] = 0;             /* protocol */
@@ -271,10 +272,6 @@ main() {
       perror("cap_rights_limit");
       exit(1);
     }
-    // if (cap_ioctls_limit(s, commands, 1) < 0) {
-    //   perror("cap_ioctl_limit");
-    //   exit(1);
-    // }
     sockets[i] = s;
   }
 
@@ -297,6 +294,12 @@ main() {
   if (cap_sysctl_limit(limit) < 0) {
     perror("cap_sysctl_limit");
     exit(1);
+  }
+  for (int i = 0; i < fibs; ++i) {
+    if (cap_ioctls_limit(sockets[i], commands, 2) < 0) {
+      perror("cap_ioctl_limit");
+      exit(1);
+    }
   }
 
   rc = kevent(kq, events, fibs, NULL, 0, NULL);
