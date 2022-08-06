@@ -279,6 +279,13 @@ main() {
   if (capcas == NULL) {
     perror("cap_init");
   }
+
+  rc = chroot("/var/empty");
+  if (rc < 0) {
+    perror("chroot");
+    exit(1);
+  }
+
   if (cap_enter() < 0) {
     perror("cap_enter");
     exit(1);
