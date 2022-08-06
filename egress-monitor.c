@@ -21,10 +21,9 @@
 #include "config.h"
 
 
-int miblen = 6;
+u_int miblen = 6;
 int mib[6];
 cap_channel_t *capifname;
-cap_channel_t *captag;
 
 
 const char *
@@ -177,8 +176,8 @@ untag(struct sockaddr *data, char *name, int s, int fib) {
 
 static char *
 ifname(int index) {
-  size_t needed;
-  char *buf;
+  size_t needed = 4096;
+  char *buf = malloc(needed);
   char *next;
   struct rt_msghdr *rtm;
   struct if_msghdrl *ifm;
@@ -214,6 +213,7 @@ ifname(int index) {
       }
     }
   }
+  free(buf);
   return NULL;
 }
 
@@ -260,12 +260,7 @@ main() {
   mib[4] = NET_RT_IFLISTL;/* extra fields for extensible msghdr structs */
   mib[5] = 0;             /* no flags */
 
-  capcas = cap_init();
-  if (capcas == NULL) {
-    perror("cap_init");
-  }
   cap_rights_init(&r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT);
-
   for (int i = 0; i < fibs; ++i) {
     setfib(i);
     s = socket(PF_ROUTE, SOCK_RAW, 0);
@@ -276,6 +271,11 @@ main() {
       exit(1);
     }
   }
+
+  capcas = cap_init();
+  if (capcas == NULL) {
+    perror("cap_init");
+  }
   if (cap_enter() < 0) {
     perror("cap_enter");
     exit(1);
@@ -285,8 +285,13 @@ main() {
     perror("cap_service_open");
   }
   cap_close(capcas);
+
   limit = cap_sysctl_limit_init(capifname);
-  cap_sysctl_limit_mib(limit, mib, sizeof(mib), CAP_SYSCTL_READ);
+  cap_sysctl_limit_mib(limit, mib, miblen, CAP_SYSCTL_RDWR);
+  if (cap_sysctl_limit(limit) < 0) {
+    perror("cap_sysctl_limit");
+    exit(1);
+  }
 
   rc = kevent(kq, events, fibs, NULL, 0, NULL);
   if (rc < 0) {
