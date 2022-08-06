@@ -1,3 +1,5 @@
+#define HAVE_CASPER 1
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,8 +15,15 @@
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
+#include <libcasper.h>
+#include <casper/cap_sysctl.h>
 
 #include "config.h"
+
+
+int miblen = 6;
+int mib[6];
+cap_channel_t *capsysctl;
 
 
 const char *
@@ -167,27 +176,21 @@ untag(struct sockaddr *data, char *name, int s, int fib) {
 
 static char *
 ifname(int index) {
-  int mib[6];
   size_t needed;
   char *buf;
   char *next;
   struct rt_msghdr *rtm;
   struct if_msghdrl *ifm;
 
-  mib[0] = CTL_NET;
-  mib[1] = PF_ROUTE;
-  mib[2] = 0;             /* protocol */
-  mib[3] = 0;             /* wildcard address family */
-  mib[4] = NET_RT_IFLISTL;/* extra fields for extensible msghdr structs */
-  mib[5] = 0;             /* no flags */
-
-  if (sysctl(mib, 6, NULL, &needed, NULL, 0) < 0) {
+  if (cap_sysctl(capsysctl, mib, miblen, NULL, &needed, NULL, 0) < 0) {
+    perror("cap_sysctl reading needed");
     return NULL;
   }
   if ((buf = malloc(needed)) == NULL) {
     return NULL;
   }
-  if (sysctl(mib, 6, buf, &needed, NULL, 0) < 0) {
+  if (cap_sysctl(capsysctl, mib, miblen, buf, &needed, NULL, 0) < 0) {
+    perror("cap_sysctl reading mib");
     free(buf);
     return NULL;
   }
@@ -217,6 +220,8 @@ ifname(int index) {
 
 int
 main() {
+  cap_channel_t *capcas;
+  void *limit;
   const char *ver = version();
   printf("egress-monitor(%s): starting\n", ver);
   int rc, s, n, fib, fibs = getfibs(), kq = kqueue();
@@ -247,6 +252,17 @@ main() {
   msg.msg_iov = iov;
   msg.msg_iovlen = 2;
 
+  mib[0] = CTL_NET;
+  mib[1] = PF_ROUTE;
+  mib[2] = 0;             /* protocol */
+  mib[3] = 0;             /* wildcard address family */
+  mib[4] = NET_RT_IFLISTL;/* extra fields for extensible msghdr structs */
+  mib[5] = 0;             /* no flags */
+
+  capcas = cap_init();
+  if (capcas == NULL) {
+    perror("cap_init");
+  }
   cap_rights_init(&r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT);
 
   for (int i = 0; i < fibs; ++i) {
@@ -254,15 +270,23 @@ main() {
     s = socket(PF_ROUTE, SOCK_RAW, 0);
     sockets[i] = s;
     EV_SET(events+i, s, EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
-    // if (cap_rights_limit(s, &r) < 0) {
-    //   perror("cap_rights_limit");
-    //   exit(1);
-    // }
+    if (cap_rights_limit(s, &r) < 0) {
+      perror("cap_rights_limit");
+      exit(1);
+    }
   }
-  // if (cap_enter() < 0) {
-  //   perror("cap_enter");
-  //   exit(1);
-  // }
+  if (cap_enter() < 0) {
+    perror("cap_enter");
+    exit(1);
+  }
+  capsysctl = cap_service_open(capcas, "system.sysctl");
+  if (capsysctl == NULL) {
+    perror("cap_service_open");
+  }
+  cap_close(capcas);
+  limit = cap_sysctl_limit_init(capsysctl);
+  cap_sysctl_limit_mib(limit, mib, sizeof(mib), CAP_SYSCTL_READ);
+
   rc = kevent(kq, events, fibs, NULL, 0, NULL);
   if (rc < 0) {
     perror("kevent");
