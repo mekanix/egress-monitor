@@ -242,6 +242,7 @@ main() {
   struct kevent events[fibs];
   struct kevent tevent;
   cap_rights_t r;
+  unsigned long commands[1];
 
   memset(&hd, 0, sizeof(hd));
   memset(&msg, 0, sizeof(msg));
@@ -253,6 +254,7 @@ main() {
   msg.msg_iov = iov;
   msg.msg_iovlen = 2;
 
+  commands[0] = SIOCAIFGROUP;
   mib[0] = CTL_NET;
   mib[1] = PF_ROUTE;
   mib[2] = 0;             /* protocol */
@@ -260,16 +262,20 @@ main() {
   mib[4] = NET_RT_IFLISTL;/* extra fields for extensible msghdr structs */
   mib[5] = 0;             /* no flags */
 
-  cap_rights_init(&r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT);
+  cap_rights_init(&r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT, CAP_IOCTL);
   for (int i = 0; i < fibs; ++i) {
     setfib(i);
     s = socket(PF_ROUTE, SOCK_RAW, 0);
-    sockets[i] = s;
     EV_SET(events+i, s, EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
     if (cap_rights_limit(s, &r) < 0) {
       perror("cap_rights_limit");
       exit(1);
     }
+    // if (cap_ioctls_limit(s, commands, 1) < 0) {
+    //   perror("cap_ioctl_limit");
+    //   exit(1);
+    // }
+    sockets[i] = s;
   }
 
   capcas = cap_init();
