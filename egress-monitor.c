@@ -23,7 +23,8 @@
 
 int miblen = 6;
 int mib[6];
-cap_channel_t *capsysctl;
+cap_channel_t *capifname;
+cap_channel_t *captag;
 
 
 const char *
@@ -182,14 +183,14 @@ ifname(int index) {
   struct rt_msghdr *rtm;
   struct if_msghdrl *ifm;
 
-  if (cap_sysctl(capsysctl, mib, miblen, NULL, &needed, NULL, 0) < 0) {
+  if (cap_sysctl(capifname, mib, miblen, NULL, &needed, NULL, 0) < 0) {
     perror("cap_sysctl reading needed");
     return NULL;
   }
   if ((buf = malloc(needed)) == NULL) {
     return NULL;
   }
-  if (cap_sysctl(capsysctl, mib, miblen, buf, &needed, NULL, 0) < 0) {
+  if (cap_sysctl(capifname, mib, miblen, buf, &needed, NULL, 0) < 0) {
     perror("cap_sysctl reading mib");
     free(buf);
     return NULL;
@@ -279,12 +280,12 @@ main() {
     perror("cap_enter");
     exit(1);
   }
-  capsysctl = cap_service_open(capcas, "system.sysctl");
-  if (capsysctl == NULL) {
+  capifname = cap_service_open(capcas, "system.sysctl");
+  if (capifname == NULL) {
     perror("cap_service_open");
   }
   cap_close(capcas);
-  limit = cap_sysctl_limit_init(capsysctl);
+  limit = cap_sysctl_limit_init(capifname);
   cap_sysctl_limit_mib(limit, mib, sizeof(mib), CAP_SYSCTL_READ);
 
   rc = kevent(kq, events, fibs, NULL, 0, NULL);
