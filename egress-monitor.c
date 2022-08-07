@@ -23,7 +23,6 @@
 
 u_int miblen = 6;
 int mib[6];
-cap_channel_t *capifname;
 
 
 const char *
@@ -175,7 +174,7 @@ untag(struct sockaddr *data, char *name, int s, int fib) {
 
 
 static char *
-ifname(int index) {
+ifname(cap_channel_t *capifname, int index) {
   size_t needed = 4096;
   char *buf = malloc(needed);
   char *next;
@@ -222,6 +221,7 @@ ifname(int index) {
 int
 main() {
   cap_channel_t *capcas;
+  cap_channel_t *capifname;
   void *limit;
   const char *ver = version();
   printf("egress-monitor(%s): starting\n", ver);
@@ -335,7 +335,7 @@ main() {
       continue;
     }
     if (hd.rtm_index) {
-      char *name = ifname(hd.rtm_index);
+      char *name = ifname(capifname, hd.rtm_index);
       if (!name) {
         fprintf(stderr, "Could not find interface with index %d\n", hd.rtm_index);
         continue;
