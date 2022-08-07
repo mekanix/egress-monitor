@@ -354,6 +354,7 @@ main() {
       free(name);
     }
   }
+  free(ver);
   printf("egress-monitor(%s): stopped\n", ver);
   return 0;
 }
