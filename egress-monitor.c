@@ -21,8 +21,21 @@
 #include "config.h"
 
 
-u_int miblen = 6;
-int mib[6];
+static int mib[] = {
+  CTL_NET,
+  PF_ROUTE,
+  0,             /* protocol */
+  0,             /* wildcard address family */
+  NET_RT_IFLISTL,/* extra fields for extensible msghdr structs */
+  0              /* no flags */
+};
+static u_int miblen = sizeof(mib) / sizeof(mib[0]);
+
+
+typedef struct cap_result {
+  int *sockets;
+  cap_channel_t *capifname;
+} cap_result_t;
 
 
 const char *
@@ -217,67 +230,61 @@ ifname(cap_channel_t *capifname, int index) {
 }
 
 
+struct msghdr *
+init_msg() {
+  size_t msgsize = sizeof(struct msghdr);
+  size_t hdsize = sizeof(struct rt_msghdr);
+  size_t iovsize = sizeof(struct iovec) * 2;
+  size_t restsize = 1024;
 
-int
-main() {
-  cap_channel_t *capcas;
-  cap_channel_t *capifname;
+  struct msghdr *msg = malloc(msgsize);
+  struct rt_msghdr *hd = malloc(hdsize);
+  struct iovec *iov = malloc(iovsize);
+  char *rest = malloc(restsize);
+
+  memset(msg, 0, msgsize);
+  memset(hd, 0, hdsize);
+  memset(iov, 0, iovsize);
+
+  iov[0].iov_base = hd;
+  iov[0].iov_len = hdsize;
+  iov[1].iov_base = rest;
+  iov[1].iov_len = restsize;
+  msg->msg_iov = iov;
+  msg->msg_iovlen = 2;
+
+  return msg;
+}
+
+
+cap_result_t *
+sock_init(int fibs, struct kevent *events) {
+  int rc;
   void *limit;
-  const char *ver = version();
-  printf("egress-monitor(%s): starting\n", ver);
-  int rc, s, n, fib, fibs = getfibs(), kq = kqueue();
-  if (fibs < 0) {
-    perror("get fibs");
-    exit(1);
-  }
-  if (kq == -1) {
-    perror("kqueue");
-    exit(1);
-  }
-  int sockets[fibs];
-  char rest[1024];
-  struct rt_msghdr hd;
-  struct msghdr msg;
-  struct iovec iov[2];
-  struct kevent events[fibs];
-  struct kevent tevent;
-  cap_rights_t r;
-  unsigned long commands[2];
-
-  memset(&hd, 0, sizeof(hd));
-  memset(&msg, 0, sizeof(msg));
-  memset(iov, 0, sizeof(iov));
-  iov[0].iov_base = &hd;
-  iov[0].iov_len = sizeof(hd);
-  iov[1].iov_base = &rest;
-  iov[1].iov_len = sizeof(rest);
-  msg.msg_iov = iov;
-  msg.msg_iovlen = 2;
+  cap_channel_t *capcas;
+  unsigned long *commands = malloc(sizeof(unsigned long) * 2);
+  cap_rights_t *r = malloc(sizeof(cap_rights_t));
+  cap_result_t *result = malloc(sizeof(cap_result_t));
+  result->sockets = malloc(sizeof(int) * fibs);
 
   commands[0] = SIOCAIFGROUP;
   commands[1] = SIOCDIFGROUP;
-  mib[0] = CTL_NET;
-  mib[1] = PF_ROUTE;
-  mib[2] = 0;             /* protocol */
-  mib[3] = 0;             /* wildcard address family */
-  mib[4] = NET_RT_IFLISTL;/* extra fields for extensible msghdr structs */
-  mib[5] = 0;             /* no flags */
 
-  cap_rights_init(&r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT, CAP_IOCTL);
+  cap_rights_init(r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT, CAP_IOCTL);
   for (int i = 0; i < fibs; ++i) {
     setfib(i);
-    s = socket(PF_ROUTE, SOCK_RAW, 0);
-    EV_SET(events+i, s, EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
-    if (cap_rights_limit(s, &r) < 0) {
+    result->sockets[i] = socket(PF_ROUTE, SOCK_RAW, 0);
+    EV_SET(events+i, result->sockets[i], EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
+    if (cap_rights_limit(result->sockets[i], r) < 0) {
       perror("cap_rights_limit");
       exit(1);
     }
-    sockets[i] = s;
   }
 
   capcas = cap_init();
   if (capcas == NULL) {
     perror("cap_init");
+    exit(1);
   }
 
   rc = chroot("/var/empty");
@@ -290,25 +297,64 @@ main() {
     perror("cap_enter");
     exit(1);
   }
-  capifname = cap_service_open(capcas, "system.sysctl");
-  if (capifname == NULL) {
+  result->capifname = cap_service_open(capcas, "system.sysctl");
+  if (result->capifname == NULL) {
     perror("cap_service_open");
+    exit(1);
   }
   cap_close(capcas);
 
-  limit = cap_sysctl_limit_init(capifname);
-  cap_sysctl_limit_mib(limit, mib, miblen, CAP_SYSCTL_RDWR);
+  limit = cap_sysctl_limit_init(result->capifname);
+  cap_sysctl_limit_mib(limit, mib, miblen, CAP_SYSCTL_READ);
   if (cap_sysctl_limit(limit) < 0) {
     perror("cap_sysctl_limit");
     exit(1);
   }
   for (int i = 0; i < fibs; ++i) {
-    if (cap_ioctls_limit(sockets[i], commands, 2) < 0) {
+    if (cap_ioctls_limit(result->sockets[i], commands, 2) < 0) {
       perror("cap_ioctl_limit");
       exit(1);
     }
   }
 
+  return result;
+}
+
+
+int
+main() {
+  char *ver;
+  int rc;
+  int s;
+  int n;
+  int fib;
+  int fibs;
+  int kq;
+  cap_result_t *cap;
+
+  ver = version();
+  printf("egress-monitor(%s): starting\n", ver);
+
+  fibs = getfibs();
+  if (fibs < 0) {
+    perror("get fibs");
+    exit(1);
+  }
+
+  kq = kqueue();
+  if (kq == -1) {
+    perror("kqueue");
+    exit(1);
+  }
+
+  struct msghdr *msg;
+  struct rt_msghdr *hd;
+  struct kevent *events = malloc(sizeof(struct kevent) * fibs);
+  struct kevent tevent;
+
+  msg = init_msg();
+  hd = msg->msg_iov[0].iov_base;
+  cap = sock_init(fibs, events);
   rc = kevent(kq, events, fibs, NULL, 0, NULL);
   if (rc < 0) {
     perror("kevent");
@@ -323,25 +369,28 @@ main() {
       break;
     }
     for (fib = 0; fib < fibs; ++fib) {
-      if (sockets[fib] == tevent.ident) break;
+      if (cap->sockets[fib] == tevent.ident) {
+        s = tevent.ident;
+        break;
+      }
     }
     if (fib == fibs) {
       fprintf(stderr, "Can not find the FIB that emited the event!\n");
       continue;
     }
-    n = recvmsg(tevent.ident, &msg, 0);
+    n = recvmsg(tevent.ident, msg, 0);
     if (n < 0) {
       perror("recvmsg failed");
       continue;
     }
-    if (hd.rtm_index) {
-      char *name = ifname(capifname, hd.rtm_index);
+    if (hd->rtm_index) {
+      char *name = ifname(cap->capifname, hd->rtm_index);
       if (!name) {
-        fprintf(stderr, "Could not find interface with index %d\n", hd.rtm_index);
+        fprintf(stderr, "Could not find interface with index %d\n", hd->rtm_index);
         continue;
       }
-      struct sockaddr *data = iov[1].iov_base;
-      switch(hd.rtm_type) {
+      struct sockaddr *data = msg->msg_iov[1].iov_base;
+      switch(hd->rtm_type) {
         case RTM_ADD: {
           tag(data, name, s, fib);
           break;
