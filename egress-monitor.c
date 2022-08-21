@@ -219,6 +219,7 @@ ifname(cap_channel_t *capifname, int index) {
           int len = dl->sdl_nlen + 1;
           char *name = malloc(len + 1);
           strlcpy(name, dl->sdl_data, len);
+          free(buf);
           return name;
         }
         break;
@@ -226,6 +227,7 @@ ifname(cap_channel_t *capifname, int index) {
     }
   }
   free(buf);
+
   return NULL;
 }
 
@@ -317,6 +319,8 @@ sock_init(int fibs, struct kevent *events) {
     }
   }
 
+  free(commands);
+  free(r);
   return result;
 }
 
@@ -331,6 +335,10 @@ main() {
   int fibs;
   int kq;
   cap_result_t *cap;
+  struct msghdr *msg;
+  struct rt_msghdr *hd;
+  struct kevent *events;
+  struct kevent tevent;
 
   ver = version();
   printf("egress-monitor(%s): starting\n", ver);
@@ -347,10 +355,7 @@ main() {
     exit(1);
   }
 
-  struct msghdr *msg;
-  struct rt_msghdr *hd;
-  struct kevent *events = malloc(sizeof(struct kevent) * fibs);
-  struct kevent tevent;
+  events = malloc(sizeof(struct kevent) * fibs);
 
   msg = init_msg();
   hd = msg->msg_iov[0].iov_base;
@@ -386,7 +391,6 @@ main() {
     if (hd->rtm_index) {
       char *name = ifname(cap->capifname, hd->rtm_index);
       if (!name) {
-        fprintf(stderr, "Could not find interface with index %d\n", hd->rtm_index);
         continue;
       }
       struct sockaddr *data = msg->msg_iov[1].iov_base;
@@ -403,7 +407,16 @@ main() {
       free(name);
     }
   }
+  free(cap->sockets);
+  free(cap->capifname);
+  free(cap);
+  free(msg->msg_iov[0].iov_base);
+  free(msg->msg_iov[1].iov_base);
+  free(msg->msg_iov);
+  free(msg);
+  free(events);
   free(ver);
   printf("egress-monitor(%s): stopped\n", ver);
+
   return 0;
 }
