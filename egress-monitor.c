@@ -1,6 +1,8 @@
 #define HAVE_CASPER 1
 
+#include <err.h>
 #include <errno.h>
+#include <ifaddrs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,12 @@
 #include "config.h"
 
 
+typedef struct cap_result {
+  int *sockets;
+  cap_channel_t *capifname;
+} cap_result_t;
+
+
 static int mib[] = {
   CTL_NET,
   PF_ROUTE,
@@ -30,13 +38,18 @@ static int mib[] = {
   0              /* no flags */
 };
 static u_int miblen = sizeof(mib) / sizeof(mib[0]);
-
-
-typedef struct cap_result {
-  int *sockets;
-  cap_channel_t *capifname;
-} cap_result_t;
-
+static const u_char masktolen[256] = {
+  [0xff] = 8 + 1,
+  [0xfe] = 7 + 1,
+  [0xfc] = 6 + 1,
+  [0xf8] = 5 + 1,
+  [0xf0] = 4 + 1,
+  [0xe0] = 3 + 1,
+  [0xc0] = 2 + 1,
+  [0x80] = 1 + 1,
+  [0x00] = 0 + 1,
+};
+static cap_result_t *cap;
 
 const char *
 inet_ntop(int af, const void *src, char *dst, socklen_t size);
@@ -62,29 +75,43 @@ getfibs() {
 }
 
 
-static int
-default_v4(struct sockaddr_in *addr) {
-  char ip[INET_ADDRSTRLEN];
-  inet_ntop(AF_INET, &(addr->sin_addr), ip, INET_ADDRSTRLEN);
-  const char *default_ip = "0.0.0.0";
-  int len = strlen(default_ip);
-  if (strncmp(ip, default_ip, len) == 0) {
-    return 1;
+static bool
+default_v4(struct sockaddr *addr) {
+  struct sockaddr_in *destination = (struct sockaddr_in *)((char *)addr + SA_SIZE(addr) * RTAX_DST);
+  struct sockaddr_in *mask = (struct sockaddr_in *)((char *)addr + SA_SIZE(addr) * RTAX_NETMASK);
+  if(destination->sin_addr.s_addr == INADDR_ANY && mask->sin_addr.s_addr == 0) {
+    return true;
   }
-  return 0;
+  return false;
 }
 
 
-static int
-default_v6(struct sockaddr_in6 *addr) {
-  char ip[INET6_ADDRSTRLEN];
-  inet_ntop(AF_INET6, &(addr->sin6_addr), ip, INET6_ADDRSTRLEN);
-  const char *default_ip = "::";
-  int len = strlen(default_ip);
-  if (strncmp(ip, default_ip, len) == 0) {
-    return 1;
+static bool
+default_v6(struct sockaddr *addr) {
+  u_char *p, *lim;
+  u_char masklen;
+  int i;
+  bool illegal = false;
+  struct sockaddr_in6 *destination = (struct sockaddr_in6 *)((char *)addr + SA_SIZE(addr) * RTAX_DST);
+  struct sockaddr_in6 *mask = (struct sockaddr_in6 *)((char *)addr + SA_SIZE(addr) * RTAX_NETMASK);
+
+  if (mask) {
+    p = (u_char *)&mask->sin6_addr;
+    for (masklen = 0, lim = p + 16; p < lim; p++) {
+      if (masktolen[*p] > 0) {
+        /* -1 is required. */
+        masklen += (masktolen[*p] - 1);
+      } else
+        illegal = true;
+    }
+  } else {
+    masklen = 128;
   }
-  return 0;
+
+  if (masklen == 0 && IN6_IS_ADDR_UNSPECIFIED(&destination->sin6_addr)) {
+    return true;
+  }
+  return false;
 }
 
 
@@ -100,7 +127,8 @@ egress_name(const char *name, int inet, int fib) {
 
 
 static int
-set_egress(const char *name, int inet, int s, int fib) {
+set_egress(const char *name, int inet, int fib) {
+  int s = cap->sockets[fib];
   struct ifgroupreq ifgr;
   char *egress = egress_name(name, inet, fib);
   if (!egress) {
@@ -120,7 +148,8 @@ set_egress(const char *name, int inet, int s, int fib) {
 
 
 static int
-unset_egress(const char *name, int inet, int s, int fib) {
+unset_egress(const char *name, int inet, int fib) {
+  int s = cap->sockets[fib];
   struct ifgroupreq ifgr;
   char *egress = egress_name(name, inet, fib);
   int namelen = strlen(name) + 1;
@@ -136,12 +165,12 @@ unset_egress(const char *name, int inet, int s, int fib) {
 }
 
 
-void
-tag(struct sockaddr *data, char *name, int s, int fib) {
+static void
+tag(struct sockaddr *data, char *name, int fib) {
   switch(data->sa_family) {
     case AF_INET: {
-      if (default_v4((struct sockaddr_in *)data)) {
-        int rc = set_egress(name, 4, s, fib);
+      if (default_v4(data)) {
+        int rc = set_egress(name, 4, fib);
         if (rc < 0) {
           perror("set_egress");
         }
@@ -149,8 +178,8 @@ tag(struct sockaddr *data, char *name, int s, int fib) {
       break;
     }
     case AF_INET6: {
-      if (default_v6((struct sockaddr_in6 *)data)) {
-        int rc = set_egress(name, 6, s, fib);
+      if (default_v6(data)) {
+        int rc = set_egress(name, 6, fib);
         if (rc < 0) {
           perror("set_egress");
         }
@@ -161,12 +190,12 @@ tag(struct sockaddr *data, char *name, int s, int fib) {
 }
 
 
-void
-untag(struct sockaddr *data, char *name, int s, int fib) {
+static void
+untag(struct sockaddr *data, char *name, int fib) {
   switch(data->sa_family) {
     case AF_INET: {
-      if (default_v4((struct sockaddr_in *)data)) {
-        int rc = unset_egress(name, 4, s, fib);
+      if (default_v4(data)) {
+        int rc = unset_egress(name, 4, fib);
         if (rc < 0) {
           perror("unset_egress");
         }
@@ -174,8 +203,8 @@ untag(struct sockaddr *data, char *name, int s, int fib) {
       break;
     }
     case AF_INET6: {
-      if (default_v6((struct sockaddr_in6 *)data)) {
-        int rc = unset_egress(name, 6, s, fib);
+      if (default_v6(data)) {
+        int rc = unset_egress(name, 6, fib);
         if (rc < 0) {
           perror("unset_egress");
         }
@@ -188,8 +217,8 @@ untag(struct sockaddr *data, char *name, int s, int fib) {
 
 static char *
 ifname(cap_channel_t *capifname, int index) {
-  size_t needed = 4096;
-  char *buf = malloc(needed);
+  size_t needed;
+  char *buf;
   char *next;
   struct rt_msghdr *rtm;
   struct if_msghdrl *ifm;
@@ -209,8 +238,9 @@ ifname(cap_channel_t *capifname, int index) {
 
   for (next = buf; next < buf + needed; next += rtm->rtm_msglen) {
     rtm = (struct rt_msghdr *)next;
-    if (rtm->rtm_version != RTM_VERSION)
+    if (rtm->rtm_version != RTM_VERSION) {
       continue;
+    }
     switch (rtm->rtm_type) {
       case RTM_IFINFO: {
         ifm = (struct if_msghdrl *)rtm;
@@ -232,7 +262,7 @@ ifname(cap_channel_t *capifname, int index) {
 }
 
 
-struct msghdr *
+static struct msghdr *
 init_msg() {
   size_t msgsize = sizeof(struct msghdr);
   size_t hdsize = sizeof(struct rt_msghdr);
@@ -259,25 +289,21 @@ init_msg() {
 }
 
 
-cap_result_t *
+static void
 sock_init(int fibs, struct kevent *events) {
   int rc;
   void *limit;
   cap_channel_t *capcas;
   unsigned long *commands = malloc(sizeof(unsigned long) * 2);
   cap_rights_t *r = malloc(sizeof(cap_rights_t));
-  cap_result_t *result = malloc(sizeof(cap_result_t));
-  result->sockets = malloc(sizeof(int) * fibs);
 
   commands[0] = SIOCAIFGROUP;
   commands[1] = SIOCDIFGROUP;
 
   cap_rights_init(r, CAP_READ, CAP_WRITE, CAP_EVENT, CAP_SOCK_CLIENT, CAP_IOCTL);
   for (int i = 0; i < fibs; ++i) {
-    setfib(i);
-    result->sockets[i] = socket(PF_ROUTE, SOCK_RAW, 0);
-    EV_SET(events+i, result->sockets[i], EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
-    if (cap_rights_limit(result->sockets[i], r) < 0) {
+    EV_SET(events+i, cap->sockets[i], EVFILT_READ, EV_ADD | EV_CLEAR, NOTE_READ, 0, NULL);
+    if (cap_rights_limit(cap->sockets[i], r) < 0) {
       perror("cap_rights_limit");
       exit(1);
     }
@@ -299,21 +325,21 @@ sock_init(int fibs, struct kevent *events) {
     perror("cap_enter");
     exit(1);
   }
-  result->capifname = cap_service_open(capcas, "system.sysctl");
-  if (result->capifname == NULL) {
+  cap->capifname = cap_service_open(capcas, "system.sysctl");
+  if (cap->capifname == NULL) {
     perror("cap_service_open");
     exit(1);
   }
   cap_close(capcas);
 
-  limit = cap_sysctl_limit_init(result->capifname);
+  limit = cap_sysctl_limit_init(cap->capifname);
   cap_sysctl_limit_mib(limit, mib, miblen, CAP_SYSCTL_READ);
   if (cap_sysctl_limit(limit) < 0) {
     perror("cap_sysctl_limit");
     exit(1);
   }
   for (int i = 0; i < fibs; ++i) {
-    if (cap_ioctls_limit(result->sockets[i], commands, 2) < 0) {
+    if (cap_ioctls_limit(cap->sockets[i], commands, 2) < 0) {
       perror("cap_ioctl_limit");
       exit(1);
     }
@@ -321,7 +347,76 @@ sock_init(int fibs, struct kevent *events) {
 
   free(commands);
   free(r);
-  return result;
+}
+
+
+static void
+setup(int fib) {
+  size_t needed;
+  char *buf;
+  char *next;
+  char *lim;
+  struct rt_msghdr *rtm;
+  struct sockaddr *sa;
+  struct if_msghdrl *ifm;
+  struct sockaddr_dl *dl;
+  struct ifaddrs *ifa;
+  struct ifaddrs *ifap;
+  bool ipv4default = false;
+  bool ipv6default = false;
+  int ifindex;
+  int mib[] = {
+    CTL_NET,
+    PF_ROUTE,
+    0,
+    0,
+    NET_RT_DUMP,
+    0,
+    fib
+  };
+  u_int miblen = sizeof(mib) / sizeof(mib[0]);
+
+  if (sysctl(mib, miblen, NULL, &needed, NULL, 0) < 0) {
+    err(1, "getting size for routing table on %d", fib);
+  }
+  if ((buf = malloc(needed)) == NULL) {
+    errx(2, "malloc(%lu)", (unsigned long)needed);
+  }
+  if (sysctl(mib, nitems(mib), buf, &needed, NULL, 0) < 0) {
+    err(1, "getting routing table on %d", fib);
+  }
+  lim = buf + needed;
+
+  if (getifaddrs(&ifap) != 0) {
+    err(1, "getifaddrs");
+  }
+  for (next = buf; next < lim; next += rtm->rtm_msglen) {
+    rtm = (struct rt_msghdr *)next;
+    if (rtm->rtm_version != RTM_VERSION) {
+      continue;
+    }
+    sa = (struct sockaddr *)(rtm + 1);
+    if (sa->sa_family == AF_INET) {
+      ipv4default = default_v4(sa);
+    } 
+    if (sa->sa_family == AF_INET6) {
+      ipv6default = default_v6(sa);
+    }
+    for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+      dl = (struct sockaddr_dl *)ifa->ifa_addr;
+      ifindex = dl->sdl_index;
+      if (rtm->rtm_index == ifindex) {
+        if (ipv4default) {
+          set_egress(ifa->ifa_name, 4, fib);
+        }
+        if (ipv6default) {
+          set_egress(ifa->ifa_name, 6, fib);
+        }
+      }
+    }
+  }
+
+  free(buf);
 }
 
 
@@ -334,11 +429,12 @@ main() {
   int fib;
   int fibs;
   int kq;
-  cap_result_t *cap;
   struct msghdr *msg;
   struct rt_msghdr *hd;
   struct kevent *events;
   struct kevent tevent;
+  struct ifaddrs *ifa;
+  struct ifaddrs *ifap;
 
   ver = version();
   printf("egress-monitor(%s): starting\n", ver);
@@ -347,6 +443,23 @@ main() {
   if (fibs < 0) {
     perror("get fibs");
     exit(1);
+  }
+
+  cap = malloc(sizeof(cap_result_t));
+  cap->sockets = malloc(sizeof(int) * fibs);
+  for (fib = 0; fib < fibs; ++fib) {
+    setfib(fib);
+    cap->sockets[fib] = socket(PF_ROUTE, SOCK_RAW, 0);
+  }
+  if (getifaddrs(&ifap) != 0) {
+    err(1, "getifaddrs");
+  }
+  for (fib = 0; fib < fibs; ++fib) {
+    for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+      unset_egress(ifa->ifa_name, 4, fib);
+      unset_egress(ifa->ifa_name, 6, fib);
+    }
+    setup(fib);
   }
 
   kq = kqueue();
@@ -359,7 +472,7 @@ main() {
 
   msg = init_msg();
   hd = msg->msg_iov[0].iov_base;
-  cap = sock_init(fibs, events);
+  sock_init(fibs, events);
   rc = kevent(kq, events, fibs, NULL, 0, NULL);
   if (rc < 0) {
     perror("kevent");
@@ -396,11 +509,11 @@ main() {
       struct sockaddr *data = msg->msg_iov[1].iov_base;
       switch(hd->rtm_type) {
         case RTM_ADD: {
-          tag(data, name, s, fib);
+          tag(data, name, fib);
           break;
         }
         case RTM_DELETE: {
-          untag(data, name, s, fib);
+          untag(data, name, fib);
           break;
         }
       }
@@ -415,8 +528,8 @@ main() {
   free(msg->msg_iov);
   free(msg);
   free(events);
-  free(ver);
   printf("egress-monitor(%s): stopped\n", ver);
+  free(ver);
 
   return 0;
 }
