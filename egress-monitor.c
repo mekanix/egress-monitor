@@ -424,7 +424,6 @@ int
 main() {
   char *ver;
   int rc;
-  int s;
   int n;
   int fib;
   int fibs;
@@ -488,7 +487,6 @@ main() {
     }
     for (fib = 0; fib < fibs; ++fib) {
       if (cap->sockets[fib] == tevent.ident) {
-        s = tevent.ident;
         break;
       }
     }
