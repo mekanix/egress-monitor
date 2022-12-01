@@ -6,15 +6,38 @@
 .Nd Watching for default routes changes and sets the interface group
 .Sh SYNOPSIS
 .Nm
+.Op Fl p Ar 4/6
 .Sh DESCRIPTION
 .Pp
 When the default route is added, egress-monitor sets the group of that
 interface to appropriate egress. That means for IPv4 and FIB 0 (default one)
 the group will be v4fib0egress. In general, the group name is
-\fBv<4|6>fib<number>egress\fR.
+\fBv<4|6>fib<number>egress\fR. If there is only one fib, the group name will be
+\fBv<4|6>egress\fR.
+.Pp
+The following options are available:
+.Bl -tag -width indent
+.It Fl p Ar protocol
+Use
+.Ar protocol
+with the value of 4 for IPv4 and 6 for IPv6. Without this option
+.Nm
+will listen to both protocols. If only one protocol is selected, then the group
+the interface will be added to will be \fBfib<number>egress\fR. If there is only
+one fib, group name will be \fBegress\fR.
 .Sh EXAMPLES
 .Pp
+Listen on all fibs and protocols:
+.Pp
 .Dl egress-monitor
+.Pp
+Listen on all fibs but only IPv4 protocol:
+.Pp
+.Dl egress-monitor -p 4
+.Pp
+Listen on all fibs but only IPv6 protocol:
+.Pp
+.Dl egress-monitor -p 6
 .Sh SEE ALSO
 .Xr socket 2
 .Sh AUTHORS
