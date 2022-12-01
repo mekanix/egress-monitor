@@ -22,7 +22,6 @@
 
 #include "config.h"
 
-
 typedef struct cap_result {
   int *sockets;
   cap_channel_t *capifname;
@@ -30,6 +29,7 @@ typedef struct cap_result {
 
 
 static int fibs = 0;
+static int protocol = 0;
 static int mib[] = {
   CTL_NET,
   PF_ROUTE,
@@ -51,6 +51,11 @@ static const u_char masktolen[256] = {
   [0x00] = 0 + 1,
 };
 static cap_result_t *cap;
+
+static void
+usage(FILE *output, const char *program) {
+  fprintf(output, "Usage: %s [-p 4/6]\n", program);
+}
 
 const char *
 inet_ntop(int af, const void *src, char *dst, socklen_t size);
@@ -122,10 +127,18 @@ egress_name(const char *name, int inet, int fib) {
     return NULL;
   }
   char *groupname = malloc(IFNAMSIZ * sizeof(char));
-  if (fibs == 1) {
-    snprintf(groupname, IFNAMSIZ, "v%d%s", inet, IFG_EGRESS);
+  if (protocol == 0) {
+    if (fibs == 1) {
+      snprintf(groupname, IFNAMSIZ, "v%d%s", inet, IFG_EGRESS);
+    } else {
+      snprintf(groupname, IFNAMSIZ, "v%dfib%d%s", inet, fib, IFG_EGRESS);
+    }
   } else {
-    snprintf(groupname, IFNAMSIZ, "v%dfib%d%s", inet, fib, IFG_EGRESS);
+    if (fibs == 1) {
+      snprintf(groupname, IFNAMSIZ, "%s", IFG_EGRESS);
+    } else {
+      snprintf(groupname, IFNAMSIZ, "fib%d%s", fib, IFG_EGRESS);
+    }
   }
   return groupname;
 }
@@ -426,18 +439,37 @@ setup(int fib) {
 
 
 int
-main() {
+main(int argc, char **argv) {
   char *ver;
   int rc;
   int n;
   int fib;
   int kq;
+  int o;
   struct msghdr *msg;
   struct rt_msghdr *hd;
   struct kevent *events;
   struct kevent tevent;
   struct ifaddrs *ifa;
   struct ifaddrs *ifap;
+
+  while ((o = getopt(argc, argv, "p:")) != -1) {
+    switch (o) {
+    case 'p':
+      if (optarg[0] == '4') {
+        protocol = AF_INET;
+      } else if (optarg[0] == '6') {
+        protocol = AF_INET6;
+      } else {
+        fprintf(stderr, "No such protocol\n");
+        exit(1);
+      }
+      break;
+    default:
+      usage(stdout, argv[0]);
+      exit(1);
+    }
+  }
 
   ver = version();
   printf("egress-monitor(%s): starting\n", ver);
@@ -503,12 +535,15 @@ main() {
       perror("recvmsg failed");
       continue;
     }
+    struct sockaddr *data = msg->msg_iov[1].iov_base;
+    if (protocol != 0 && data->sa_family != protocol) {
+      continue;
+    }
     if (hd->rtm_index) {
       char *name = ifname(cap->capifname, hd->rtm_index);
       if (!name) {
         continue;
       }
-      struct sockaddr *data = msg->msg_iov[1].iov_base;
       switch(hd->rtm_type) {
         case RTM_ADD: {
           tag(data, name, fib);
