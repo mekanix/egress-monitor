@@ -29,6 +29,7 @@ typedef struct cap_result {
 } cap_result_t;
 
 
+static int fibs = 0;
 static int mib[] = {
   CTL_NET,
   PF_ROUTE,
@@ -121,7 +122,11 @@ egress_name(const char *name, int inet, int fib) {
     return NULL;
   }
   char *groupname = malloc(IFNAMSIZ * sizeof(char));
-  snprintf(groupname, IFNAMSIZ, "v%dfib%d%s", inet, fib, IFG_EGRESS);
+  if (fibs == 1) {
+    snprintf(groupname, IFNAMSIZ, "v%d%s", inet, IFG_EGRESS);
+  } else {
+    snprintf(groupname, IFNAMSIZ, "v%dfib%d%s", inet, fib, IFG_EGRESS);
+  }
   return groupname;
 }
 
@@ -426,7 +431,6 @@ main() {
   int rc;
   int n;
   int fib;
-  int fibs;
   int kq;
   struct msghdr *msg;
   struct rt_msghdr *hd;
