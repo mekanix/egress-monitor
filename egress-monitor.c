@@ -290,7 +290,6 @@ init_msg() {
   struct msghdr *msg = malloc(msgsize);
   struct rt_msghdr *hd = malloc(hdsize);
   struct iovec *iov = malloc(iovsize);
-  char *rest = malloc(restsize);
 
   memset(msg, 0, msgsize);
   memset(hd, 0, hdsize);
@@ -298,7 +297,7 @@ init_msg() {
 
   iov[0].iov_base = hd;
   iov[0].iov_len = hdsize;
-  iov[1].iov_base = rest;
+  iov[1].iov_base = malloc(restsize);
   iov[1].iov_len = restsize;
   msg->msg_iov = iov;
   msg->msg_iovlen = 2;
@@ -400,7 +399,7 @@ setup(int fib) {
   if ((buf = malloc(needed)) == NULL) {
     errx(2, "malloc(%lu)", (unsigned long)needed);
   }
-  if (sysctl(mib, nitems(mib), buf, &needed, NULL, 0) < 0) {
+  if (sysctl(mib, miblen, buf, &needed, NULL, 0) < 0) {
     err(1, "getting routing table on %d", fib);
   }
   lim = buf + needed;
@@ -433,7 +432,7 @@ setup(int fib) {
       }
     }
   }
-
+  freeifaddrs(ifap);
   free(buf);
 }
 
@@ -496,6 +495,7 @@ main(int argc, char **argv) {
     }
     setup(fib);
   }
+  freeifaddrs(ifap);
 
   kq = kqueue();
   if (kq == -1) {
